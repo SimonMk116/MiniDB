@@ -1,0 +1,8 @@
+build/
+.idea/
+.vscode/
+
+*.db
+*.db-journal
+
+compile_commands.json
