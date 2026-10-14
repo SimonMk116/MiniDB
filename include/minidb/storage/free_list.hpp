@@ -8,23 +8,30 @@
 
 namespace minidb {
 
-// Strategy boundary for tracking reusable page IDs. Implementations belong in
-// this header/source pair for small strategies, or in a separate
-// <strategy>_free_list.hpp/.cpp pair as they grow. This interface does not
-// allocate pages; DiskManager grows the database when acquirePage() is empty.
+// Strategy interface for tracking reusable page IDs.
+//
+// A FreeList does not allocate database pages itself. Instead, it acts as a
+// small bookkeeping layer that accepts released page IDs and returns those IDs
+// for reuse when DiskManager needs to allocate a new page.
 class FreeList {
 public:
     virtual ~FreeList() = default;
 
-    // Return a reusable ID, or nullopt when this strategy has none available.
+    // Returns a reusable ID, or std::nullopt when no free page is currently
+    // available. The caller is responsible for zeroing the page if it must be
+    // reinitialized before reuse.
     virtual std::optional<page_id_t> acquirePage() = 0;
 
-    // Make an existing page ID reusable. DiskManager validates the ID range.
+    // Adds an existing page ID back to the reusable set.
+    // Implementations may reject duplicate frees by throwing an exception.
     virtual void releasePage(page_id_t page_id) = 0;
 };
 
-// A simple, process-local strategy. Its contents are lost when the database
-// process exits, so it is useful as a first implementation, not for recovery.
+// A simple, process-local strategy.
+//
+// This is suitable for an in-memory prototype, but its contents disappear when
+// the process exits. It therefore does not provide durable recovery of freed
+// page IDs after a restart.
 class InMemoryFreeList final : public FreeList {
 public:
     std::optional<page_id_t> acquirePage() override;

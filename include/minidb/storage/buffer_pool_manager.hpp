@@ -10,21 +10,31 @@
 
 namespace minidb {
 
+// In-memory cache for database pages.
+//
+// The buffer pool keeps a limited number of pages resident in memory and uses a
+// clock-based replacement strategy to evict unpinned frames when the cache is
+// full. Pages can be pinned to prevent eviction while they are being used.
 class BufferPoolManager {
 public:
     explicit BufferPoolManager(DiskManager& disk_manager, std::size_t pool_size = 16);
 
-    // Returns nullptr when no frame is available. DiskManager exceptions for
-    // invalid IDs or I/O failures propagate to the caller. Success pins page.
+    // Loads a page into the buffer pool and pins it.
+    // Returns nullptr when no frame is available for a new page, and propagates
+    // any DiskManager read or write errors to the caller.
     Page* fetchPage(page_id_t page_id);
 
-    // Returns false when the page is not resident or is already unpinned.
+    // Decrements the pin count for a page and marks the frame dirty if requested.
+    // Returns false if the page is not resident or already unpinned.
     bool unpinPage(page_id_t page_id, bool is_dirty);
 
-    // Flushes are allowed while pinned and do not change pin counts. Returns
-    // false if the page is not resident; DiskManager I/O exceptions propagate.
+    // Flushes a dirty page to disk while keeping its pin state unchanged.
+    // Returns false if the page is not resident; DiskManager I/O exceptions
+    // propagate to the caller.
     bool flushPage(page_id_t page_id);
-    // Attempts every dirty page, then rethrows the first I/O exception, if any.
+
+    // Writes every dirty resident page to disk and rethrows the first I/O
+    // exception encountered if any write fails.
     void flushAllPages();
 
     // TODO: Page guards could unpin automatically at scope exit and reduce

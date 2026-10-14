@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
 #include <string>
 
@@ -35,14 +36,17 @@ void test_fetch_pins_and_unpin_validation() {
 
         auto* first = pool.fetchPage(0);
         expect(first != nullptr, "fetch should load an allocated page");
+        first->data()[0] = std::byte{7};
         expect(pool.fetchPage(0) == first, "cache hit should return the resident frame");
         expect(pool.fetchPage(1) == nullptr, "pinned frame must not be evicted");
+        expect(first->data()[0] == std::byte{7}, "failed fetch with all frames pinned must preserve frame data");
         expect(pool.unpinPage(0, false), "first unpin should succeed");
         expect(pool.fetchPage(1) == nullptr, "one remaining pin must prevent eviction");
         expect(pool.unpinPage(0, false), "second unpin should succeed");
         expect(!pool.unpinPage(0, false), "extra unpin should be rejected");
         expect(!pool.unpinPage(99, false), "unpin of a nonresident page should fail");
-        expect(pool.fetchPage(1) != nullptr, "unpinned frame should be reusable");
+        auto* page1 = pool.fetchPage(1);
+        expect(page1 != nullptr, "unpinned frame should be reusable");
         expect(pool.unpinPage(1, false), "new resident page should unpin");
 
         bool invalid_fetch_threw = false;
@@ -52,6 +56,8 @@ void test_fetch_pins_and_unpin_validation() {
             invalid_fetch_threw = true;
         }
         expect(invalid_fetch_threw, "invalid page ID should propagate DiskManager error");
+        expect(pool.fetchPage(1) == page1, "failed fetch must not evict an existing cached page");
+        expect(pool.unpinPage(1, false), "page should unpin after checking failed-fetch preservation");
     }
     std::filesystem::remove(path);
 }
@@ -99,9 +105,10 @@ public:
     using DiskManager::DiskManager;
 
     bool fail_writes{true};
+    std::optional<minidb::page_id_t> page_to_fail;
 
     void writePage(minidb::page_id_t page_id, const minidb::Page& page) override {
-        if (fail_writes) {
+        if (fail_writes || (page_to_fail && page_id == *page_to_fail)) {
             throw std::runtime_error("injected write failure");
         }
         DiskManager::writePage(page_id, page);
@@ -153,6 +160,90 @@ void test_dirty_write_failure_preserves_victim() {
         minidb::Page persisted;
         disk.DiskManager::readPage(0, persisted);
         expect(persisted.data()[0] == std::byte{123}, "successful retry should persist dirty bytes");
+    }
+    std::filesystem::remove(path);
+}
+
+void test_flush_all_continues_after_a_write_failure() {
+    const auto path = test_path("buffer_pool_flush_all_partial_failure");
+    {
+        FailingWriteDiskManager disk(path.string());
+        allocate_pages(disk, 2);
+        minidb::BufferPoolManager pool(disk, 2);
+
+        auto* page0 = pool.fetchPage(0);
+        auto* page1 = pool.fetchPage(1);
+        expect(page0 != nullptr && page1 != nullptr, "both pages should load");
+        page0->data()[0] = std::byte{0xA0};
+        page1->data()[0] = std::byte{0xB0};
+        expect(pool.unpinPage(0, true), "page 0 should be dirty");
+        expect(pool.unpinPage(1, true), "page 1 should be dirty");
+
+        disk.fail_writes = false;
+        disk.page_to_fail = 0;
+        bool flush_failed = false;
+        try {
+            pool.flushAllPages();
+        } catch (const std::runtime_error&) {
+            flush_failed = true;
+        }
+        expect(flush_failed, "flushAllPages should report a page write failure");
+
+        minidb::Page page0_on_disk;
+        minidb::Page page1_on_disk;
+        disk.DiskManager::readPage(0, page0_on_disk);
+        disk.DiskManager::readPage(1, page1_on_disk);
+        expect(page0_on_disk.data()[0] == std::byte{0}, "failed page should remain unwritten");
+        expect(page1_on_disk.data()[0] == std::byte{0xB0},
+               "flushAllPages should continue and write other dirty pages");
+
+        disk.page_to_fail.reset();
+        pool.flushAllPages();
+        disk.DiskManager::readPage(0, page0_on_disk);
+        expect(page0_on_disk.data()[0] == std::byte{0xA0},
+               "page whose flush failed should remain dirty and flush on retry");
+    }
+    std::filesystem::remove(path);
+}
+
+void test_dirty_eviction_persists_across_reopen() {
+    const auto path = test_path("buffer_pool_dirty_eviction");
+    {
+        minidb::DiskManager disk(path.string());
+        allocate_pages(disk, 3);
+        minidb::BufferPoolManager pool(disk, 2);
+
+        auto* page0 = pool.fetchPage(0);
+        auto* page1 = pool.fetchPage(1);
+        expect(page0 != nullptr && page1 != nullptr, "both initial pages should load");
+        for (std::size_t i = 0; i < minidb::PAGE_SIZE; ++i) {
+            page0->data()[i] = std::byte{0xAA};
+            page1->data()[i] = std::byte{0xBB};
+        }
+        expect(pool.unpinPage(0, true), "page 0 should be marked dirty");
+        expect(pool.fetchPage(0) != nullptr, "dirty page should remain available for another fetch");
+        expect(pool.unpinPage(0, false), "later clean unpin should not clear an existing dirty flag");
+        expect(pool.unpinPage(1, true), "page 1 should be marked dirty");
+
+        auto* page2 = pool.fetchPage(2);
+        expect(page2 == page0, "third fetch should evict page 0 in this Clock order");
+
+        minidb::Page evicted_page;
+        disk.readPage(0, evicted_page);
+        for (std::size_t i = 0; i < minidb::PAGE_SIZE; ++i) {
+            expect(evicted_page.data()[i] == std::byte{0xAA},
+                   "dirty victim should be fully written before its frame is reused");
+        }
+    }
+
+    {
+        minidb::DiskManager reopened(path.string());
+        minidb::Page persisted_page;
+        reopened.readPage(0, persisted_page);
+        for (std::size_t i = 0; i < minidb::PAGE_SIZE; ++i) {
+            expect(persisted_page.data()[i] == std::byte{0xAA},
+                   "evicted page bytes should survive closing and reopening");
+        }
     }
     std::filesystem::remove(path);
 }
@@ -213,6 +304,8 @@ int main() {
         test_fetch_pins_and_unpin_validation();
         test_clock_second_chance_and_clean_eviction();
         test_dirty_write_failure_preserves_victim();
+        test_flush_all_continues_after_a_write_failure();
+        test_dirty_eviction_persists_across_reopen();
         test_flush_and_reopen_persistence();
         std::cout << "BufferPoolManager tests passed\n";
         return 0;
