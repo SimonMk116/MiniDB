@@ -72,6 +72,89 @@ Page* BufferPoolManager::fetchPage(page_id_t page_id) {
     return &frame.page;
 }
 
+Page* BufferPoolManager::newPage(page_id_t& page_id) {
+    const bool using_free_frame = !free_frames_.empty();
+    frame_id_t frame_id{};
+    std::optional<page_id_t> victim_page_id;
+
+    if (using_free_frame) {
+        frame_id = free_frames_.back();
+    } else {
+        const auto victim = replacer_.victim();
+        if (!victim) {
+            return nullptr;
+        }
+        frame_id = *victim;
+        Frame& frame = frames_[frame_id];
+        victim_page_id = frame.page_id;
+
+        if (!victim_page_id) {
+            replacer_.unpin(frame_id);
+            throw std::logic_error("Clock selected a frame without a resident page");
+        }
+
+        if (frame.dirty) {
+            try {
+                disk_manager_.writePage(*victim_page_id, frame.page);
+            } catch (...) {
+                replacer_.unpin(frame_id);
+                throw;
+            }
+            frame.dirty = false;
+        }
+    }
+
+    page_id_t allocated_page_id{};
+    try {
+        allocated_page_id = disk_manager_.allocatePage();
+    } catch (...) {
+        if (!using_free_frame) {
+            replacer_.unpin(frame_id);
+        }
+        throw;
+    }
+
+    bool inserted = false;
+    try {
+        inserted = page_table_.emplace(allocated_page_id, frame_id).second;
+    } catch (...) {
+        // A failed page-table insertion must not consume a database page or
+        // make the selected victim disappear from the pool.
+        if (!using_free_frame) {
+            replacer_.unpin(frame_id);
+        }
+        try {
+            disk_manager_.freePage(allocated_page_id);
+        } catch (...) {
+            // Preserve the original failure; the allocated page is otherwise
+            // unreachable and can be reclaimed by a later allocator policy.
+        }
+        throw;
+    }
+    if (!inserted) {
+        if (!using_free_frame) {
+            replacer_.unpin(frame_id);
+        }
+        throw std::logic_error("DiskManager allocated a page already resident in the buffer pool");
+    }
+
+    if (victim_page_id) {
+        page_table_.erase(*victim_page_id);
+    }
+
+    Frame& frame = frames_[frame_id];
+    frame.page.reset();
+    frame.page_id = allocated_page_id;
+    frame.pin_count = 1;
+    frame.dirty = false;
+    if (using_free_frame) {
+        free_frames_.pop_back();
+    }
+    replacer_.pin(frame_id);
+    page_id = allocated_page_id;
+    return &frame.page;
+}
+
 bool BufferPoolManager::unpinPage(page_id_t page_id, bool is_dirty) {
     const auto found = page_table_.find(page_id);
     if (found == page_table_.end()) {

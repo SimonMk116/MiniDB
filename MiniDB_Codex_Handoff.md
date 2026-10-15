@@ -14,11 +14,17 @@ defined as 8,192 bytes in `include/minidb/storage/page.hpp`.
 - `BufferPoolManager` owns a configurable number of frames (default 16), tracks
   page pins and dirty state, flushes dirty pages, and evicts using the
   second-chance Clock policy. It is single-threaded.
-- `SlottedPage` is a non-owning `Page&` view. Stage 2 currently implements its
-  versioned byte format, explicit initialization, and validation only.
+- `SlottedPage` is a non-owning `Page&` view. It supports a versioned byte
+  format, explicit initialization and validation, binary record insertion and
+  copied retrieval, deletion, lowest-free-slot reuse, compaction, and a
+  validated `slotCount()` accessor.
+- `HeapTable` stores records across SlottedPages. It uses composite page/slot
+  record IDs and a persistent root plus linked metadata pages for membership.
+  The caller retains the root page ID to reopen a table.
 
-See [docs/free_list.md](docs/free_list.md) and
-[docs/slotted_page.md](docs/slotted_page.md) for storage-format details.
+See [docs/free_list.md](docs/free_list.md),
+[docs/slotted_page.md](docs/slotted_page.md), and
+[docs/heap_table.md](docs/heap_table.md) for storage details.
 
 ## SlottedPage status
 
@@ -28,9 +34,11 @@ C++ structs. Slot IDs are directory indices, not data offsets. The validator
 checks header fields, directory and data boundaries, slot state/reserved bytes,
 record bounds, and overlapping occupied extents.
 
-The next step, after design/code review, is Stage 3: insertion and its
-failure-atomicity tests. Retrieval, deletion and slot reuse, then compaction,
-remain later incremental steps. Do not implement all record operations at once.
+Insertion validates and preflights total space before mutation. If fragmented,
+it compacts only after confirming the insertion can fit, so failed insertions
+leave the full page byte-for-byte unchanged. Deletion leaves directory entries
+in place; insertion reuses the lowest free slot. Compaction preserves live slot
+IDs and rewrites only physical record offsets.
 
 ## Build and tests
 
@@ -40,16 +48,16 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-CMake currently registers four test executables: DiskManager persistence,
-DiskManager robustness, BufferPoolManager, and SlottedPage initialization and
-validation. Record insertion/retrieval/deletion tests do not exist until those
-operations are implemented.
+CMake registers five test executables: DiskManager persistence, DiskManager
+robustness, BufferPoolManager, SlottedPage, and HeapTable. HeapTable tests cover
+metadata validation, record operations, scans, buffer-pool pin cleanup, and
+clean-close/reopen persistence.
 
 ## Working constraints
 
 - Inspect current source and Git status before making changes.
 - Keep changes incremental and explain invariants and design choices.
-- Avoid unrelated refactoring, schemas, SQL types, indexes, heap files, and
-  concurrency during the SlottedPage work.
+- Avoid unrelated refactoring, schemas, SQL types, indexes, WAL, transactions,
+  crash recovery, and concurrency during the HeapTable work.
 - Run the requested build/tests and report only results actually observed.
-- Wait for review between the SlottedPage implementation stages.
+- Wait for review before implementing additional higher-level components.

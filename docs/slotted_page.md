@@ -1,11 +1,12 @@
-# SlottedPage format (Stage 2)
+# SlottedPage format and current implementation
 
 `SlottedPage` is a non-owning view over an existing `Page`. The `Page` owns the
 8,192 bytes; the view only reads or writes those bytes. The referenced `Page`
 must outlive the view.
 
-The current implementation supports explicit initialization and validation.
-It does not yet support inserting, retrieving, deleting, or compacting records.
+The implementation supports explicit initialization, validation, binary record
+insertion and copied retrieval, deletion, lowest-free-slot reuse, and
+compaction. It remains a small single-page component; record IDs are slot IDs.
 
 ## On-page representation
 
@@ -22,10 +23,11 @@ lifetime, and host byte order do not determine the disk format.
 | 6–7 | 2 | Data boundary, little-endian |
 | 8 onward | 6 per slot | Slot directory |
 
-The directory grows upward from byte 8. Record data will be allocated from the
-end of the page downward. The data boundary is the lower edge of that record
-area. The directory end is derived as `8 + slot_count * 6`; it is not stored
-separately.
+The directory grows upward from byte 8. Record data is allocated from the end
+of the page downward. `data_boundary` is the lowest offset occupied by any
+non-empty live record; it is `PAGE_SIZE` when there are no non-empty live
+records. The directory end is derived as `8 + slot_count * 6`; it is not stored
+separately. Free space lies between the directory end and `data_boundary`.
 
 Each 6-byte slot entry contains:
 
@@ -36,18 +38,22 @@ Each 6-byte slot entry contains:
 | 4 | 1 | State: `0` free, `1` occupied |
 | 5 | 1 | Reserved; must be zero |
 
-Free entries must have zero offset and length. An occupied entry may have a
-zero length, which represents a valid empty record. Slot IDs are zero-based
-directory indices; physical byte offsets are not record identifiers. Future
-deletion will leave entries in place and reuse the lowest free slot ID.
+Free entries must have zero offset and length. An occupied zero-length entry
+represents an empty record and uses the canonical offset `PAGE_SIZE`; empty
+records do not affect `data_boundary`. Non-empty records have positive length
+and begin at or above `data_boundary`. Slot IDs are zero-based directory
+indices; physical byte offsets are not record identifiers. Deletion leaves a
+canonical free entry in place, and insertion reuses the lowest free slot ID.
 
 ## Validation rules
 
 The validator rejects unsupported magic/version values, nonzero reserved
 bytes, slot counts that cannot fit, and data boundaries outside the page or
-before the directory end. For every occupied slot it checks that the offset
-and length fit within the page, that the record begins at or after the data
-boundary, and that nonempty record extents do not overlap.
+before the directory end. For every occupied slot it checks that non-empty
+records begin after the directory and at or above `data_boundary`, fit within
+the page, and do not overlap. It also checks that `data_boundary` equals the
+lowest non-empty record offset, or `PAGE_SIZE` when there are no non-empty
+records. Free slots and empty records must use their canonical representations.
 
 The maximum possible slot count under this format is
 `(8192 - 8) / 6 = 1364`. Bounds are checked before calculating record ends, so
@@ -61,9 +67,35 @@ data boundary to `PAGE_SIZE` (encoded as `0x2000`).
 
 ## Tests
 
-`slotted_page_test` checks initialization and empty-page validity; invalid
-magic/version; excessive slot count; data boundaries before the directory and
-beyond the page; and malformed slot state, reserved byte, free-entry extent,
-out-of-page record extent, and overlapping live records. Record operations,
-fragmentation behavior, and insertion atomicity will be tested in later stages
-when those operations exist.
+`insertRecord()` accepts `std::span<const std::byte>` and returns an optional
+zero-based slot ID. It reuses the lowest free entry before appending. Empty
+records are valid. When contiguous space is insufficient, it first checks
+whether total free space (including reclaimable deleted bytes) can satisfy the
+request. It compacts only if the request can then succeed. Any failed insertion
+leaves every page byte unchanged, including the layout of fragmented pages.
+The input may contain arbitrary binary bytes. `getRecord()` returns an
+independently owned `std::vector<std::byte>`; invalid pages, free slots, and
+out-of-range IDs return no value.
+`slotCount()` returns the validated directory size, including deleted slots,
+or no value for an invalid page. `getLiveRecords()` validates once and returns
+all live slot IDs and owned byte vectors in slot order; HeapTable uses this
+batch operation during scans.
+
+`deleteRecord()` marks an occupied slot free without removing its directory
+entry or moving other records. Its old payload becomes reclaimable
+fragmentation. The data boundary is recomputed from the lowest remaining live
+non-empty record. Deleting a free or invalid slot returns false.
+
+`compact()` packs live non-empty payloads toward the page end, updates their
+physical offsets, preserves all slot IDs and empty/free entries, and sets the
+boundary to the lowest packed record offset. It returns false without changing
+the page when validation fails. Insert-triggered compaction builds its new
+layout in a temporary `Page` before replacing the old bytes.
+
+`slotted_page_test` covers initialization; malformed headers and slot entries;
+record extents overlapping the directory, extending past the page, overlapping
+each other, and adjacent without overlap; canonical empty records; and
+`data_boundary` consistency. It also covers binary and multiple records,
+owned retrieval, empty records, invalid IDs, maximum usable payload, deletion,
+stable IDs, lowest-slot reuse, explicit and insertion-triggered compaction,
+fragmentation, and byte-for-byte preservation after failed insertions.

@@ -19,6 +19,7 @@ add_executable(minidb
     src/storage/clock_replacer.cpp
     src/storage/buffer_pool_manager.cpp
     src/storage/slotted_page.cpp
+    src/storage/heap_table.cpp
 )
 
 add_executable(disk_manager_persistence_test
@@ -50,6 +51,17 @@ add_executable(slotted_page_test
     src/storage/slotted_page.cpp
 )
 
+add_executable(heap_table_test
+    tests/heap_table_test.cpp
+    src/storage/page.cpp
+    src/storage/disk_manager.cpp
+    src/storage/free_list.cpp
+    src/storage/clock_replacer.cpp
+    src/storage/buffer_pool_manager.cpp
+    src/storage/slotted_page.cpp
+    src/storage/heap_table.cpp
+)
+
 target_include_directories(minidb
     PRIVATE
         ${PROJECT_SOURCE_DIR}/include
@@ -71,6 +83,11 @@ target_include_directories(buffer_pool_manager_test
 )
 
 target_include_directories(slotted_page_test
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+)
+
+target_include_directories(heap_table_test
     PRIVATE
         ${PROJECT_SOURCE_DIR}/include
 )
@@ -110,6 +127,13 @@ target_compile_options(slotted_page_test
         -Wpedantic
 )
 
+target_compile_options(heap_table_test
+    PRIVATE
+        -Wall
+        -Wextra
+        -Wpedantic
+)
+
 add_test(
     NAME disk_manager_persistence_test
     COMMAND disk_manager_persistence_test
@@ -128,4 +152,9 @@ add_test(
 add_test(
     NAME slotted_page_test
     COMMAND slotted_page_test
+)
+
+add_test(
+    NAME heap_table_test
+    COMMAND heap_table_test
 )

@@ -8,9 +8,10 @@ MiniDB is an educational relational database project built incrementally in C++2
 - `DiskManager`: page reads, writes, allocation, and reuse through a `FreeList` strategy.
 - `InMemoryFreeList`: process-local free-page tracking; free-page state does not survive restart.
 - `BufferPoolManager`: pinned pages, dirty tracking, flushing, and Clock-based eviction.
-- `SlottedPage`: a non-owning view over an existing `Page`, currently supporting explicit initialization and format validation only.
+- `SlottedPage`: a non-owning view over an existing `Page`, supporting format initialization/validation, binary record insertion/retrieval, deletion, lowest-free-slot reuse, and on-demand compaction.
+- `HeapTable`: multi-page binary record storage with composite page/slot IDs, scans, deletion, and a persistent metadata page chain.
 
-Slotted-page insertion, retrieval, deletion, slot reuse, and compaction are not implemented yet. See [the slotted-page format and current scope](docs/slotted_page.md).
+See [the slotted-page format and implementation](docs/slotted_page.md) for its byte layout, invariants, and API behavior.
 
 ## Build and test
 
@@ -20,7 +21,7 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-CTest currently runs four executables: DiskManager persistence, DiskManager robustness, BufferPoolManager behavior, and SlottedPage initialization/validation.
+CTest currently runs five executables, including HeapTable behavior and clean-reopen tests. See [HeapTable format and lifecycle](docs/heap_table.md).
 
 ## Repository structure
 
@@ -43,6 +44,6 @@ The current FreeList implementation is in-memory only. See [docs/free_list.md](d
 
 ## Development status
 
-The storage foundation is implemented and tested. SlottedPage Stage 2 is complete: format initialization and validation are available, but no record operations have been added. The next step is to review and implement tuple insertion incrementally, followed by retrieval, deletion/reuse, and compaction.
+The storage foundation includes tested SlottedPage and HeapTable record operations. HeapTable persistence requires the caller to retain the metadata root page ID and flush the buffer pool before shutdown; there is not yet a named-table catalog or crash recovery.
 
-The project deliberately does not yet include schemas, SQL types, heap files, indexes, query execution, transactions, or concurrency.
+The project deliberately does not yet include schemas, SQL types, indexes, query execution, transactions, WAL, crash recovery, or concurrency.

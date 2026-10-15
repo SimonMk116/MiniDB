@@ -24,6 +24,11 @@ public:
     // any DiskManager read or write errors to the caller.
     Page* fetchPage(page_id_t page_id);
 
+    // Allocates a zeroed database page, loads it into the buffer pool, and
+    // returns it pinned. Returns nullptr without allocating if no frame is
+    // available. The output ID is written only on success.
+    Page* newPage(page_id_t& page_id);
+
     // Decrements the pin count for a page and marks the frame dirty if requested.
     // Returns false if the page is not resident or already unpinned.
     bool unpinPage(page_id_t page_id, bool is_dirty);
