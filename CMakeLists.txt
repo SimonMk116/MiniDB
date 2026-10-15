@@ -18,6 +18,7 @@ add_executable(minidb
     src/storage/free_list.cpp
     src/storage/clock_replacer.cpp
     src/storage/buffer_pool_manager.cpp
+    src/storage/slotted_page.cpp
 )
 
 add_executable(disk_manager_persistence_test
@@ -43,6 +44,12 @@ add_executable(buffer_pool_manager_test
     src/storage/buffer_pool_manager.cpp
 )
 
+add_executable(slotted_page_test
+    tests/slotted_page_test.cpp
+    src/storage/page.cpp
+    src/storage/slotted_page.cpp
+)
+
 target_include_directories(minidb
     PRIVATE
         ${PROJECT_SOURCE_DIR}/include
@@ -59,6 +66,11 @@ target_include_directories(disk_manager_robustness_test
 )
 
 target_include_directories(buffer_pool_manager_test
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+)
+
+target_include_directories(slotted_page_test
     PRIVATE
         ${PROJECT_SOURCE_DIR}/include
 )
@@ -91,6 +103,13 @@ target_compile_options(buffer_pool_manager_test
         -Wpedantic
 )
 
+target_compile_options(slotted_page_test
+    PRIVATE
+        -Wall
+        -Wextra
+        -Wpedantic
+)
+
 add_test(
     NAME disk_manager_persistence_test
     COMMAND disk_manager_persistence_test
@@ -104,4 +123,9 @@ add_test(
 add_test(
     NAME buffer_pool_manager_test
     COMMAND buffer_pool_manager_test
+)
+
+add_test(
+    NAME slotted_page_test
+    COMMAND slotted_page_test
 )
